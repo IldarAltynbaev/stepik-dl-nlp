@@ -1,0 +1,128 @@
+!pip install GPUtil
+import numpy as np
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.io import wavfile
+import torch
+import torch.nn as nn  
+from torch.utils.data import DataLoader, TensorDataset
+from collections.abc import Mapping
+import nltk
+import fasttext
+from nltk import word_tokenize
+import gensim
+from nltk.util import ngrams
+from IPython.display import clear_output
+from GPUtil import showUtilization as gpu_usage
+from numba import cuda
+Device = 'cpu'
+
+def free_gpu_cache():
+    print("Initial GPU Usage")
+    gpu_usage()                             
+
+    torch.cuda.empty_cache()
+
+    cuda.select_device(0)
+    cuda.close()
+    cuda.select_device(0)
+
+    print("GPU Usage after emptying the cache")
+    gpu_usage()
+
+free_gpu_cache()      
+
+def get_tensor_from_text(list_of_text, max_sentence_len, char_keys_dict):
+
+    text_tensor = torch.zeros(len(list_of_text), max_sentence_len+2).to(Device)
+
+    for row_num in range(len(list_of_text)):
+        for column_num in range(len(list_of_text[row_num])):
+            current_char = list_of_text[row_num][column_num]
+            value = list(char_keys_dict.keys())[list(char_keys_dict.values()).index(current_char)]
+            text_tensor[row_num, column_num+1] = value
+
+    return text_tensor
+
+
+class RNN_Quotes_Prediction(nn.Module):
+    def __init__(self, num_of_tockens, embedding_size, stacked_layers) -> None:
+        super().__init__()
+        self.stacked_layers = stacked_layers
+        self.embedding_size = embedding_size
+        self.embedding = nn.Embedding(num_of_tockens, embedding_size)
+        self.rnn = nn.RNN(embedding_size, stacked_layers, batch_first=True)
+        self.fc = nn.Linear(stacked_layers,num_of_tockens)
+
+    def forward(self,x):
+        batch_size = x.size(0)
+        out, _ = self.rnn(self.embedding(x.long()))
+        out = self.fc(out)
+        return out.float()
+        
+
+
+!git clone https://github.com/IldarAltynbaev/stepik-dl-nlp.git
+    
+with open('/kaggle/working/stepik-dl-nlp/datasets/author_quotes.txt') as text_file:
+    raw_text = text_file.read()
+    list_of_text = raw_text.split('\n')
+uniqie_chars =''.join(set(raw_text))
+
+char_keys_dict =  dict([i for i in enumerate(uniqie_chars)])
+max_sentence_len =  len(max(list_of_text, key=len))
+text_tensor = get_tensor_from_text(list_of_text, max_sentence_len,char_keys_dict)
+
+train_tensor = text_tensor[:,:-1]
+target_tensor = text_tensor[:,1:]
+
+#index_tensor = target_tensor.unsqueeze(2)
+#target_tensor = target_tensor.unsqueeze(2).expand(-1,-1,len(char_keys_dict))
+
+#zero_tensor = torch.zeros(target_tensor.size(0),target_tensor.size(1),target_tensor.size(2))
+#target_tensor = zero_tensor.scatter(dim=2, index = target_tensor.to(int), value=1)
+
+
+train_tensor.requires_grad_()
+target_tensor.requires_grad_()
+#train_tensor.to('cuda')
+#target_tensor.to('cuda')
+
+train_data = TensorDataset(train_tensor,target_tensor)
+train_loader = DataLoader(train_data,batch_size=100,shuffle=False)
+
+model = RNN_Quotes_Prediction(len(uniqie_chars),64,2)
+loss = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
+epoch_num = 5
+
+
+history = []
+for i in range(epoch_num):
+    for index, batch in enumerate(train_loader):
+        
+        x_batch, y_batch = batch[0], batch[1]
+        optimizer.zero_grad()
+        preds = model(x_batch)
+        #preds = torch.argmax(preds, dim=2, keepdim=False)
+        #error = loss(torch.tensor(preds,requires_grad=True).to(torch.float32),torch.tensor(y_batch.unsqueeze(1)).to(torch.float32))
+        y_batch = y_batch.to(int)
+        #res = torch.gather(preds, dim=2, index=y_batch[:,:,None])
+        
+        error = loss(preds.reshape(-1,len(uniqie_chars)), y_batch.reshape(-1))
+        
+        error.backward()
+        
+        optimizer.step()
+        clear_output(True)
+        
+        
+        history.append(error.data.numpy())
+        if (index + 1) % 100 == 0:
+            clear_output(True)
+            plt.plot(history, label='loss')
+            plt.legend()
+            plt.show()
+
+torch.save(model, '/kaggle/working/stepik-dl-nlp/datasets/lstm_model')
+
